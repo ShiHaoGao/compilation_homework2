@@ -1,2 +1,2 @@
 cd build
-./llvmassignment ../bc/test00.bc
+./llvmassignment ../bc/test11.bc

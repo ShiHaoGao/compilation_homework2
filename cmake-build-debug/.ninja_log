@@ -1,3 +1,7 @@
 # ninja log v5
 1	983	1699683060671642030	CMakeFiles/llvmassignment.dir/LLVMAssignment.cpp.o	991080006f9d1f5d
 990	2066	1699683061747241918	llvmassignment	6efec17e07bc54c3
+4	1376	1699687149864473930	CMakeFiles/llvmassignment.dir/LLVMAssignment.cpp.o	991080006f9d1f5d
+1382	2671	1699687151150463747	llvmassignment	6efec17e07bc54c3
+4	1025	1699705597819727618	CMakeFiles/llvmassignment.dir/LLVMAssignment.cpp.o	991080006f9d1f5d
+1030	2141	1699705598926807447	llvmassignment	6efec17e07bc54c3

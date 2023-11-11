@@ -56,7 +56,15 @@ public:
         output();
     }
 
-    Log &operator<<(const std::string &message);
+    Log &operator<<(const std::string &message) {
+        _message += message;
+        return *this;
+    }
+
+    Log &operator<<(const int &message) {
+        _message += std::to_string(message);
+        return *this;
+    }
 
 private:
     LogLevel _level;
@@ -75,11 +83,6 @@ void Log::output() {
     } else {
         errs() << "\033[34m[Debug]: \033[0m" << _message << '\n';
     }
-}
-
-Log &Log::operator<<(const std::string &message) {
-    _message += message;
-    return *this;
 }
 
 
@@ -109,16 +112,26 @@ struct FuncPtrPass : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
     FuncPtrPass() : ModulePass(ID) {}
 
-    std::map<unsigned int, std::vector<StringRef>> lineFuncMap;
+    using FuncNameList = std::set<StringRef>;
+    std::set<StringRef> funcNameList;
+    std::map<unsigned int, std::set<StringRef>> lineFuncMap;
 
-    void insertFuncName(unsigned int lineno, StringRef funcName) {
+    void addFuncName(StringRef funcName) {
+        funcNameList.insert(funcName);
+    }
+
+    void insertFuncNameList(unsigned int lineno) {
+        Debug << "lineno: " << lineno;
         auto it = lineFuncMap.find(lineno);
         if (it == lineFuncMap.end()) {
-            lineFuncMap.insert(std::make_pair(lineno, std::vector<StringRef>(1, funcName)));
+            lineFuncMap.insert(std::pair(lineno, FuncNameList(funcNameList)));
         } else {
-            it->second.push_back(funcName);
+            Debug << "lineFuncMap has lineno";
+            auto iter = lineFuncMap.find(lineno);
+            auto list = iter->second;
+            list.insert(funcNameList.begin(), funcNameList.end());
         }
-
+        funcNameList.clear();
     }
 
     void output() const {
@@ -127,7 +140,7 @@ struct FuncPtrPass : public ModulePass {
             auto &funcNames = out.second;
             for (auto it = funcNames.begin(); it != funcNames.end(); it++) {
                 if (it != funcNames.begin()) {
-                    errs() << " ,";
+                    errs() << ", ";
                 }
                 errs() << *it;
             }
@@ -135,32 +148,68 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
-    void evalCallInst(const CallInst *callInst) {
-        // getCalledFunction returns the function called,
-        // or null if this is an indirect function invocation.
-        auto lineno = callInst->getDebugLoc().getLine();
-        if (auto *func = callInst->getCalledFunction()) {
-            // 直接函数调用（或者已经被优化成直接调用的间接函数调用）
-            if (func->isIntrinsic())
-                return;
-            StringRef funcName = func->getName().data();
-//            if (funcName == "llvm.dbg.value") {
-//                return;
-//            }
-
-            insertFuncName(lineno, funcName);
+    // 处理是PHI结点的情况
+    void evalPHINode(const PHINode *phiNode) {
+        Debug << "Eval PHINode!";
+        for (Value *value: phiNode->incoming_values()) {
+            evalValue(value);
         }
-//        else { // 非直接函数调用
-//            Debug << "Indirect function invocation: " << *callInst;
-//            const Value *value = callInst->getCalledOperand();
-//            errs()("Value of indirect function invocation: " << *value);
-//            if (const PHINode *phiNode = dyn_cast<PHINode>(value)) {
-//                handlePHINode(phiNode);
-//            } else {
-//                Debug << "Unhandled CallOperand Value: " << *value;
-//            }
-//        }
-//        insertFuncName(callInst->getDebugLoc().getLine());
+    }
+
+    void evalArgument(Argument *arg) {
+        Debug << "Eval Arugment!";
+        unsigned int argIdx = arg->getArgNo(); // 形参在函数参数中的位置
+        auto *parentFunc = arg->getParent(); // 形参所在的函数
+        for (const User *user: parentFunc->users()) {
+            // 获取参数所在函数的直接调用
+            if (const auto *callInst = dyn_cast<CallInst>(user)) {
+                Value *operand = callInst->getArgOperand(argIdx);
+                evalValue(operand);
+            } else {
+                Error << "Indirect call user of argument's parent function";
+            }
+        }
+    }
+
+    // 处理直接函数调用。
+    void evalFunction(const Function *func) {
+        Debug << "Function";
+        addFuncName(func->getName().data());
+    }
+
+    // 处理Indirect call value
+    void evalValue(Value *value) {
+        Debug << "Eval Value!";
+        if (auto *func = dyn_cast<Function>(value)) {
+            evalFunction(func);
+        } else if (auto *phiNode = dyn_cast<PHINode>(value)) {
+            evalPHINode(phiNode);
+        } else if (auto *arg = dyn_cast<Argument>(value)) {
+            evalArgument(arg);
+        } else {
+            Error << "Unhandled CallOperand Value, can place \"NULL\" into function Name Set.";
+//            addFuncName("NULL");
+        }
+    }
+
+    void evalFuncPointer(Module &M) {
+        for (Function &f: M) {
+            for (BasicBlock &bb: f) {
+                for (Instruction &i: bb) {
+                    if (auto *callInst = dyn_cast<CallInst>(&i)) {
+                        // 如果是llvm的debug信息，略过
+                        if (auto *func = callInst->getCalledFunction())
+                            if (func->isIntrinsic()) continue;
+                        // 调用总dispatch函数，eval
+                        auto *value = callInst->getCalledOperand();
+                        evalValue(value);
+                        // 将function call可能的函数加入set中
+                        insertFuncNameList(callInst->getDebugLoc().getLine());
+                    }
+                }
+            }
+        }
+        output();
     }
 
     bool runOnModule(Module &M) override {
@@ -169,16 +218,7 @@ struct FuncPtrPass : public ModulePass {
         M.dump();
         errs() << "------------------------------\n";
 
-        for (Function &f: M) {
-            for (BasicBlock &bb: f) {
-                for (Instruction &i: bb) {
-                    if (auto *callInst = dyn_cast<CallInst>(&i)) {
-                        evalCallInst(callInst);
-                    }
-                }
-            }
-        }
-        output();
+        evalFuncPointer(M);
         return true;
     }
 };
