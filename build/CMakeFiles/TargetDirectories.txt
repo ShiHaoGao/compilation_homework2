@@ -1,0 +1,4 @@
+/root/hw2/build/CMakeFiles/rebuild_cache.dir
+/root/hw2/build/CMakeFiles/edit_cache.dir
+/root/hw2/build/CMakeFiles/llvmassignment.dir
+/root/hw2/build/CMakeFiles/intrinsics_gen.dir
