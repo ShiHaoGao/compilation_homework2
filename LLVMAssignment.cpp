@@ -177,6 +177,19 @@ struct FuncPtrPass : public ModulePass {
         addFuncName(func->getName().data());
     }
 
+    void evalFuncReturn(Function* f) {
+        Debug << "eval funcReturn!";
+        for (BasicBlock& bb: *f) {
+            for (Instruction& i: bb) {
+                if (auto *retInst = dyn_cast<ReturnInst>(&i)) {
+                    Value *retValue = retInst->getReturnValue();
+                    evalValue(retValue);
+                }
+            }
+
+        }
+    }
+
     // 处理Indirect call value
     void evalValue(Value *value) {
         Debug << "Eval Value!";
@@ -186,7 +199,15 @@ struct FuncPtrPass : public ModulePass {
             evalPHINode(phiNode);
         } else if (auto *arg = dyn_cast<Argument>(value)) {
             evalArgument(arg);
-        } else {
+        } else if (auto *callReturn = dyn_cast<CallInst>(value)) {
+            if (auto* func = callReturn->getCalledFunction()) {
+                evalFuncReturn(func);
+            } else {
+                Error << "FuncPointer of function return eval fail, because of function call is unknown. ";
+            }
+
+        }
+        else {
             Error << "Unhandled CallOperand Value, can place \"NULL\" into function Name Set.";
 //            addFuncName("NULL");
         }
