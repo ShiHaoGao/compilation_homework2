@@ -112,9 +112,18 @@ struct FuncPtrPass : public ModulePass {
     static char ID; // Pass identification, replacement for typeid
     FuncPtrPass() : ModulePass(ID) {}
 
+
+    /*  当前Instruction结束，即清理 */
     using FuncNameList = std::set<StringRef>;
+    using FuncList = std::set<Function *>;
     std::set<StringRef> funcNameList;
+    std::set<Function *> funcList;
+    std::map<Function *, Value *> func_user_map;
+
+    /* 全局,不清理 */
     std::map<unsigned int, std::set<StringRef>> lineFuncMap;
+    std::map<Value *, std::set<Function *>> callValue_Func_Map;
+
 
     void addFuncName(StringRef funcName) {
         funcNameList.insert(funcName);
@@ -131,7 +140,53 @@ struct FuncPtrPass : public ModulePass {
             auto list = iter->second;
             list.insert(funcNameList.begin(), funcNameList.end());
         }
+    }
+
+    void addFunction(Function *function) {
+        funcList.insert(function);
+    }
+
+    void insertValueFuncMap(Value *callValue) {
+        Debug << "Call Value name: " << callValue->getName();
+        auto it = callValue_Func_Map.find(callValue);
+        if (it == callValue_Func_Map.end()) {
+            callValue_Func_Map.insert(std::pair(callValue, FuncList(funcList)));
+        } else {
+            Debug << "lineFuncMap has lineno";
+            auto iter = callValue_Func_Map.find(callValue);
+            auto list = iter->second;
+            list.insert(funcList.begin(), funcList.end());
+        }
+    }
+
+    FuncList getFuncList(Value *callValue) {
+        Debug << "get call value name: " << callValue->getName();
+        auto it = callValue_Func_Map.find(callValue);
+        if (it != callValue_Func_Map.end()) {
+            return it->second;
+        } else {
+            Error << "Get callValue's functionList error! There is not a " << callValue->getName() << "key!";
+            return FuncList{};
+        }
+    }
+
+    bool hasCallFunction(Value *callValue) {
+        return callValue_Func_Map.find(callValue) != callValue_Func_Map.end();
+    }
+
+    bool hasCallValue(Function *func) {
+        return func_user_map.find(func) != func_user_map.end();
+    }
+
+    Value *getCallValue(Function *func) {
+        assert(func_user_map.find(func) != func_user_map.end());
+        return func_user_map[func];
+    }
+
+    void clearTmpData() {
+        funcList.clear();
         funcNameList.clear();
+        func_user_map.clear();
     }
 
     void output() const {
@@ -148,21 +203,35 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
-    // 处理是PHI结点的情况
-    void evalPHINode(const PHINode *phiNode) {
+    // 处理是PHI结点的函数调用
+    void evalPHINode(PHINode *phiNode) {
         Debug << "Eval PHINode!";
         for (Value *value: phiNode->incoming_values()) {
             evalValue(value);
         }
     }
 
+    // 处理函数参数的函数调用
     void evalArgument(Argument *arg) {
         Debug << "Eval Arugment!";
         unsigned int argIdx = arg->getArgNo(); // 形参在函数参数中的位置
         auto *parentFunc = arg->getParent(); // 形参所在的函数
-        for (const User *user: parentFunc->users()) {
+
+        // 获取参数所在函数的间接调用
+        // 如果是间接调用，那么这个间接调用的CallValue已经被解析完成，并加入func_Value_map中，可以直接查找到user。
+        if (hasCallValue(parentFunc)) {
+            auto callValue = getCallValue(parentFunc);
+            if (auto *callInst = dyn_cast<CallInst>(callValue)) {
+                Value *operand = callInst->getArgOperand(argIdx);
+                evalValue(operand);
+            } else {
+                Error << "Indirect call user of argument's parent function is not a CallInst";
+            }
+        }
+
+        for (User *user: parentFunc->users()) {
             // 获取参数所在函数的直接调用
-            if (const auto *callInst = dyn_cast<CallInst>(user)) {
+            if (auto *callInst = dyn_cast<CallInst>(user)) {
                 Value *operand = callInst->getArgOperand(argIdx);
                 evalValue(operand);
             } else {
@@ -172,22 +241,29 @@ struct FuncPtrPass : public ModulePass {
     }
 
     // 处理直接函数调用。
-    void evalFunction(const Function *func) {
+    void evalFunction(Function *func) {
         Debug << "Function";
         addFuncName(func->getName().data());
+        addFunction(func);
     }
 
-    void evalFuncReturn(Function* f) {
+    // 处理函数返回值的函数调用
+    void evalFuncReturn(CallInst *callReturn) {
         Debug << "eval funcReturn!";
-        for (BasicBlock& bb: *f) {
-            for (Instruction& i: bb) {
-                if (auto *retInst = dyn_cast<ReturnInst>(&i)) {
-                    Value *retValue = retInst->getReturnValue();
-                    evalValue(retValue);
-                }
+        if (auto *f = callReturn->getCalledFunction()) {
+            evalReturnInst(f);
+        } else if (auto callValue = callReturn->getCalledValue(); hasCallFunction(callValue)) {
+            // 这个returnValue的callValue不是一个直接调用，那么这个value已经被分析过，在map中存放可能调用的值
+            auto callFuncList = getFuncList(callValue);
+            for (auto callFunc: callFuncList) {
+                // function : indirect call value 保存起来，便于function寻找。
+                func_user_map[callFunc] = callReturn;
+                evalReturnInst(callFunc);
             }
-
+        } else {
+            Error << "FuncPointer of function return eval fail, because of function call is unknown. ";
         }
+
     }
 
     // 处理Indirect call value
@@ -200,20 +276,25 @@ struct FuncPtrPass : public ModulePass {
         } else if (auto *arg = dyn_cast<Argument>(value)) {
             evalArgument(arg);
         } else if (auto *callReturn = dyn_cast<CallInst>(value)) {
-            if (auto* func = callReturn->getCalledFunction()) {
-                evalFuncReturn(func);
-            } else {
-                Error << "FuncPointer of function return eval fail, because of function call is unknown. ";
-            }
-
-        }
-        else {
+            evalFuncReturn(callReturn);
+        } else {
             Error << "Unhandled CallOperand Value, can place \"NULL\" into function Name Set.";
 //            addFuncName("NULL");
         }
     }
 
-    void evalFuncPointer(Module &M) {
+    void evalReturnInst(Function* f) {
+        for (BasicBlock &bb: *f) {
+            for (Instruction &i: bb) {
+                if (auto *retInst = dyn_cast<ReturnInst>(&i)) {
+                    Value *retValue = retInst->getReturnValue();
+                    evalValue(retValue);
+                }
+            }
+        }
+    }
+
+    void evalCallInst(Module &M) {
         for (Function &f: M) {
             for (BasicBlock &bb: f) {
                 for (Instruction &i: bb) {
@@ -226,6 +307,9 @@ struct FuncPtrPass : public ModulePass {
                         evalValue(value);
                         // 将function call可能的函数加入set中
                         insertFuncNameList(callInst->getDebugLoc().getLine());
+                        insertValueFuncMap(value);
+                        // 清理局部暂存数据
+                        clearTmpData();
                     }
                 }
             }
@@ -239,7 +323,7 @@ struct FuncPtrPass : public ModulePass {
         M.dump();
         errs() << "------------------------------\n";
 
-        evalFuncPointer(M);
+        evalCallInst(M);
         return true;
     }
 };
