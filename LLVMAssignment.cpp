@@ -142,6 +142,7 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
+
     void addFunction(Function *function) {
         funcList.insert(function);
     }
@@ -152,7 +153,7 @@ struct FuncPtrPass : public ModulePass {
         if (it == callValue_Func_Map.end()) {
             callValue_Func_Map.insert(std::pair(callValue, FuncList(funcList)));
         } else {
-            Debug << "lineFuncMap has lineno";
+            Debug << "ValueFuncMap has callValue";
             auto iter = callValue_Func_Map.find(callValue);
             auto list = iter->second;
             list.insert(funcList.begin(), funcList.end());
@@ -170,11 +171,18 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
-    bool hasCallFunction(Value *callValue) {
+    // callValue_Func_Map 中是否存在 函数指针Value
+    bool hasCallValue(Value *callValue) {
         return callValue_Func_Map.find(callValue) != callValue_Func_Map.end();
     }
 
-    bool hasCallValue(Function *func) {
+    void addCallValue(Function* func, Value* callValue) {
+//        assert(func_user_map.find(func) == func_user_map.end());
+        func_user_map[func] = callValue;
+    }
+
+    // func_user_map 中是否有function。
+    bool hasCallFunction(Function *func) {
         return func_user_map.find(func) != func_user_map.end();
     }
 
@@ -219,7 +227,7 @@ struct FuncPtrPass : public ModulePass {
 
         // 获取参数所在函数的间接调用
         // 如果是间接调用，那么这个间接调用的CallValue已经被解析完成，并加入func_Value_map中，可以直接查找到user。
-        if (hasCallValue(parentFunc)) {
+        if (hasCallFunction(parentFunc)) {
             auto callValue = getCallValue(parentFunc);
             if (auto *callInst = dyn_cast<CallInst>(callValue)) {
                 Value *operand = callInst->getArgOperand(argIdx);
@@ -227,15 +235,15 @@ struct FuncPtrPass : public ModulePass {
             } else {
                 Error << "Indirect call user of argument's parent function is not a CallInst";
             }
-        }
-
-        for (User *user: parentFunc->users()) {
-            // 获取参数所在函数的直接调用
-            if (auto *callInst = dyn_cast<CallInst>(user)) {
-                Value *operand = callInst->getArgOperand(argIdx);
-                evalValue(operand);
-            } else {
-                Error << "Indirect call user of argument's parent function";
+        } else {
+            for (User *user: parentFunc->users()) {
+                // 获取参数所在函数的直接调用
+                if (auto *callInst = dyn_cast<CallInst>(user)) {
+                    Value *operand = callInst->getArgOperand(argIdx);
+                    evalValue(operand);
+                } else {
+                    Error << "Indirect call user of argument's parent function";
+                }
             }
         }
     }
@@ -243,7 +251,7 @@ struct FuncPtrPass : public ModulePass {
     // 处理直接函数调用。
     void evalFunction(Function *func) {
         Debug << "Function";
-        addFuncName(func->getName().data());
+        addFuncName(func->getName());
         addFunction(func);
     }
 
@@ -252,12 +260,12 @@ struct FuncPtrPass : public ModulePass {
         Debug << "eval funcReturn!";
         if (auto *f = callReturn->getCalledFunction()) {
             evalReturnInst(f);
-        } else if (auto callValue = callReturn->getCalledValue(); hasCallFunction(callValue)) {
+        } else if (auto callValue = callReturn->getCalledValue(); hasCallValue(callValue)) {
             // 这个returnValue的callValue不是一个直接调用，那么这个value已经被分析过，在map中存放可能调用的值
             auto callFuncList = getFuncList(callValue);
             for (auto callFunc: callFuncList) {
-                // function : indirect call value 保存起来，便于function寻找。
-                func_user_map[callFunc] = callReturn;
+                // <function> : <indirect call value> 保存起来，便于function寻找。
+                addCallValue(callFunc, callReturn);
                 evalReturnInst(callFunc);
             }
         } else {
@@ -269,6 +277,16 @@ struct FuncPtrPass : public ModulePass {
     // 处理Indirect call value
     void evalValue(Value *value) {
         Debug << "Eval Value!";
+        // 如果这个value已经被算过了，那就不用再递归去算了
+        // 这地方有bug
+//        if (hasCallValue(value)) {
+//            auto funcList = getFuncList(value);
+//            for (auto* func : funcList) {
+//                addFuncName(func->getName());
+//            }
+//            return;
+//        }
+
         if (auto *func = dyn_cast<Function>(value)) {
             evalFunction(func);
         } else if (auto *phiNode = dyn_cast<PHINode>(value)) {
@@ -281,6 +299,7 @@ struct FuncPtrPass : public ModulePass {
             Error << "Unhandled CallOperand Value, can place \"NULL\" into function Name Set.";
 //            addFuncName("NULL");
         }
+        insertValueFuncMap(value);
     }
 
     void evalReturnInst(Function* f) {
