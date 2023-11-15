@@ -53,7 +53,7 @@ public:
     explicit Log(LogLevel level) : _level(level) {}
 
     ~Log() {
-        output();
+//        output();
     }
 
     Log &operator<<(const std::string &message) {
@@ -337,10 +337,10 @@ struct FuncPtrPass : public ModulePass {
     }
 
     bool runOnModule(Module &M) override {
-        errs() << "Hello: ";
-        errs().write_escaped(M.getName()) << '\n';
-        M.dump();
-        errs() << "------------------------------\n";
+//        errs() << "Hello: ";
+//        errs().write_escaped(M.getName()) << '\n';
+//        M.dump();
+//        errs() << "------------------------------\n";
 
         evalCallInst(M);
         return true;
